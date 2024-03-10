@@ -16,12 +16,11 @@ use itertools::Itertools;
 use regex::Regex;
 use smallvec::SmallVec;
 use swc_core::ecma::atoms::JsWord;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, instrument, warn};
 
-use crate::checkers::SecretVuln;
 use crate::definitions::DefKind;
 use crate::ir::{Literal, VarKind};
-use crate::utils::{projvec_from_proj, projvec_from_projvec};
+use crate::utils::projvec_from_projvec;
 use crate::{
     checkers::IntrinsicArguments,
     definitions::{Class, Const, DefId, Environment, Value},
@@ -645,10 +644,10 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     #[inline]
     pub(crate) fn is_obj(&self, varid: VarId) -> bool {
         if let Some(defid) = self.body().get_defid_from_var(varid) {
-            return match self.env.defs.defs[defid] {
-                DefKind::GlobalObj(Obj) | DefKind::Class(Obj) => true,
-                _ => false,
-            };
+            return matches!(
+                self.env.defs.defs[defid],
+                DefKind::GlobalObj(_) | DefKind::Class(_)
+            );
         }
         false
     }
@@ -769,16 +768,10 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             Operand::Var(var) => {
                 if let Base::Var(varid) = var.base {
                     if let Some(value) = self.get_value(def, varid, Some(var.projections.clone())) {
-                        return match value {
-                            Value::Const(_) | Value::Phi(_) => true,
-                            _ => false,
-                        };
+                        return matches!(value, Value::Const(_) | Value::Phi(_));
                     } else if let Some(VarKind::GlobalRef(def)) = self.body().vars.get(varid) {
                         if let Some(value) = self.value_manager.defid_to_value.get(def) {
-                            return match value {
-                                Value::Const(_) | Value::Phi(_) => true,
-                                _ => false,
-                            };
+                            return matches!(value, Value::Const(_) | Value::Phi(_));
                         }
                     }
                 }

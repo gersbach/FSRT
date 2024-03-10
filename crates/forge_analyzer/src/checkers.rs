@@ -958,22 +958,18 @@ impl<'cx> Runner<'cx> for SecretChecker {
                     if let Some(Value::Object(varid)) =
                         interp.get_value(def, *varid_argument, Some(projvec_from_str("headers")))
                     {
-                        match interp.get_value(def, *varid, Some(projvec_from_str("Authorization")))
+                        if let Some(Value::Const(_) | Value::Phi(_)) =
+                            interp.get_value(def, *varid, Some(projvec_from_str("Authorization")))
                         {
-                            Some(Value::Const(_) | Value::Phi(_)) => {
-                                let vuln = SecretVuln::new(
-                                    interp.callstack(),
-                                    interp.env(),
-                                    interp.entry(),
-                                );
-                                info!("Found a vuln!");
-                                self.vulns.push(vuln);
-                            }
-                            _ => {}
+                            let vuln =
+                                SecretVuln::new(interp.callstack(), interp.env(), interp.entry());
+                            info!("Found a vuln!");
+                            self.vulns.push(vuln);
                         }
                     }
                 }
             }
+
             _ => {}
         }
 
