@@ -1439,13 +1439,11 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
         inst: &'cx Inst,
         initial_state: Self::State,
     ) -> Self::State {
-        println!("inst {inst}");
         match inst {
             Inst::Expr(rvalue) => {
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
             }
             Inst::Assign(var, rvalue) => {
-                //println!("rvalue... {rvalue:?}");
                 if let Base::Var(varid) = var.base {
                     match rvalue {
                         Rvalue::Call(Operand::Var(variable), _) => {
@@ -1578,14 +1576,11 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
         def: DefId,
         rvalue: &Rvalue,
     ) {
-        println!("Rvalue ... {rvalue:?}");
         match rvalue {
             Rvalue::Read(operand) => {
-                // transfer all of the variables
                 if let Operand::Var(variable) = operand {
                     if let Base::Var(varid_rval) = variable.base {
                         if interp.is_obj(varid_rval) {
-                            println!("woohoo !!");
                             interp.add_value_with_projection(
                                 def,
                                 *varid,
@@ -1611,11 +1606,8 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                 } else if let Some(value) =
                     get_prev_value(interp.get_value(def, *varid, Some(lval.projections.clone())))
                 {
-                    // here
-                    println!("found this rval {rvalue:?}");
                     self.insert_value(interp, operand, lval, varid, def, Some(value));
                 } else {
-                    println!("found this rval x2 {rvalue:?}");
                     self.insert_value(interp, operand, lval, varid, def, None);
                 }
             }
