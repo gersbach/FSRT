@@ -14,6 +14,7 @@ use std::{
 use tracing::{debug, info, warn};
 
 use crate::interp::ProjectionVec;
+use crate::utils::projvec_from_str;
 use crate::{
     definitions::{Const, DefId, Environment, IntrinsicName, Value},
     interp::{
@@ -926,61 +927,56 @@ impl<'cx> Runner<'cx> for SecretChecker {
         state: &Self::State,
         operands: Option<SmallVec<[Operand; 4]>>,
     ) -> ControlFlow<(), Self::State> {
-        if let Intrinsic::SecretFunction(package_data) = intrinsic {
-            if let Some(operand) = operands
-                .unwrap_or_default()
-                .get((package_data.secret_position - 1) as usize)
-            {
-                match operand {
-                    Operand::Lit(lit) => {
-                        let vuln =
-                            SecretVuln::new(interp.callstack(), interp.env(), interp.entry());
-                        if let Literal::Str(_) = lit {
+        match intrinsic {
+            Intrinsic::SecretFunction(package_data) => {
+                if let Some(operand) = operands
+                    .unwrap_or_default()
+                    .get((package_data.secret_position - 1) as usize)
+                {
+                    {
+                        if interp.check_for_const(operand, def) {
+                            let vuln =
+                                SecretVuln::new(interp.callstack(), interp.env(), interp.entry());
                             info!("Found a vuln!");
                             self.vulns.push(vuln);
                         }
                     }
-                    Operand::Var(var) => {
-                        if let Base::Var(varid) = var.base {
-                            if let Some(value) =
-                                interp.get_value(def, varid, Some(var.projections.clone()))
-                            {
-                                match value {
-                                    Value::Const(_) | Value::Phi(_) => {
-                                        let vuln = SecretVuln::new(
-                                            interp.callstack(),
-                                            interp.env(),
-                                            interp.entry(),
-                                        );
-                                        info!("Found a vuln!");
-                                        self.vulns.push(vuln);
-                                    }
-                                    _ => {}
-                                }
-                            } else if let Some(VarKind::GlobalRef(def)) =
-                                interp.body().vars.get(varid)
-                            {
-                                if let Some(value) = interp.value_manager.defid_to_value.get(def) {
-                                    println!("value [] {value:?}");
-                                    match value {
-                                        Value::Const(_) | Value::Phi(_) => {
-                                            let vuln = SecretVuln::new(
-                                                interp.callstack(),
-                                                interp.env(),
-                                                interp.entry(),
-                                            );
-                                            info!("Found a vuln!");
-                                            self.vulns.push(vuln);
-                                        }
-                                        _ => {}
-                                    }
-                                }
+                }
+            }
+            Intrinsic::Fetch => {
+                if let Some(Operand::Var(Variable {
+                    base: Base::Var(varid),
+                    ..
+                })) = operands.unwrap_or_default().get(1)
+                {
+                    let varid_argument =
+                        if let Some(Value::Object(varid)) = interp.get_value(def, *varid, None) {
+                            varid
+                        } else {
+                            varid
+                        };
+                    if let Some(Value::Object(varid)) =
+                        interp.get_value(def, *varid_argument, Some(projvec_from_str("headers")))
+                    {
+                        match interp.get_value(def, *varid, Some(projvec_from_str("Authorization")))
+                        {
+                            Some(Value::Const(_) | Value::Phi(_)) => {
+                                let vuln = SecretVuln::new(
+                                    interp.callstack(),
+                                    interp.env(),
+                                    interp.entry(),
+                                );
+                                info!("Found a vuln!");
+                                self.vulns.push(vuln);
                             }
+                            _ => {}
                         }
                     }
                 }
             }
+            _ => {}
         }
+
         ControlFlow::Continue(*state)
     }
 }
@@ -1443,11 +1439,13 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
         inst: &'cx Inst,
         initial_state: Self::State,
     ) -> Self::State {
+        println!("inst {inst}");
         match inst {
             Inst::Expr(rvalue) => {
                 self.transfer_rvalue(interp, def, loc, block, rvalue, initial_state)
             }
             Inst::Assign(var, rvalue) => {
+                //println!("rvalue... {rvalue:?}");
                 if let Base::Var(varid) = var.base {
                     match rvalue {
                         Rvalue::Call(Operand::Var(variable), _) => {
@@ -1580,29 +1578,44 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
         def: DefId,
         rvalue: &Rvalue,
     ) {
+        println!("Rvalue ... {rvalue:?}");
         match rvalue {
             Rvalue::Read(operand) => {
                 // transfer all of the variables
                 if let Operand::Var(variable) = operand {
                     if let Base::Var(varid_rval) = variable.base {
-                        interp.value_manager.varid_to_value.clone().iter().for_each(
-                            |((_defid, varid_rval_potential, projection), value)| {
-                                if varid_rval_potential == &varid_rval {
-                                    interp.add_value_with_projection(
-                                        def,
-                                        *varid,
-                                        value.clone(),
-                                        projection.clone(),
-                                    )
-                                }
-                            },
-                        );
+                        if interp.is_obj(varid_rval) {
+                            println!("woohoo !!");
+                            interp.add_value_with_projection(
+                                def,
+                                *varid,
+                                Value::Object(varid_rval),
+                                lval.projections.clone(),
+                            )
+                        } else {
+                            interp.value_manager.varid_to_value.clone().iter().for_each(
+                                |((_defid, varid_rval_potential, projection), value)| {
+                                    if varid_rval_potential == &varid_rval && _defid == &def {
+                                        println!("value {value:?} lval.projections {:?} rval.projections {:?}", lval.projections, projection);
+                                        interp.add_value_with_projection(
+                                            def,
+                                            *varid,
+                                            value.clone(),
+                                            lval.projections.clone(),
+                                        )
+                                    }
+                                },
+                            );
+                        }
                     }
                 } else if let Some(value) =
                     get_prev_value(interp.get_value(def, *varid, Some(lval.projections.clone())))
                 {
+                    // here
+                    println!("found this rval {rvalue:?}");
                     self.insert_value(interp, operand, lval, varid, def, Some(value));
                 } else {
+                    println!("found this rval x2 {rvalue:?}");
                     self.insert_value(interp, operand, lval, varid, def, None);
                 }
             }

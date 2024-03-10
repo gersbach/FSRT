@@ -1,3 +1,5 @@
+use crate::interp::ProjectionVec;
+use crate::ir::Projection;
 use crate::{
     definitions::{CalleeRef, Const, DefId, Value},
     ir::{Base, Literal, Operand, VarId, VarKind, Variable},
@@ -56,6 +58,18 @@ pub fn convert_operand_to_raw(operand: &Operand) -> Option<String> {
     } else {
         None
     }
+}
+
+pub fn projvec_from_str(str: &str) -> ProjectionVec {
+    ProjectionVec::from([Projection::Known(str.into())])
+}
+
+pub fn projvec_from_proj(proj: Projection) -> ProjectionVec {
+    ProjectionVec::from([proj])
+}
+
+pub fn projvec_from_projvec(projs: &[Projection]) -> ProjectionVec {
+    ProjectionVec::from(projs)
 }
 
 pub fn convert_lit_to_raw(lit: &Literal) -> Option<String> {

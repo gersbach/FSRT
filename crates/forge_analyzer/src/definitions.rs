@@ -42,6 +42,7 @@ use swc_core::{
 use tracing::{debug, field::debug, info, instrument, warn};
 use typed_index_collections::{TiSlice, TiVec};
 
+use crate::ir::VarId;
 use crate::{
     ctx::ModId,
     ir::{
@@ -72,6 +73,7 @@ pub enum Const {
 pub enum Value {
     Uninit,
     Unknown,
+    Object(VarId),
     Const(Const),
     Phi(Vec<Const>),
 }
@@ -960,6 +962,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 {
                     if *name == *"authorize" {
                         return Some(Intrinsic::Authorize(IntrinsicName::Other));
+                    } else if *name == *"fetch" {
+                        return Some(Intrinsic::Fetch);
                     }
                 }
                 None

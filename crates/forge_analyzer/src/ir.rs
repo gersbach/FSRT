@@ -342,6 +342,18 @@ impl Body {
     }
 
     #[inline]
+    pub(crate) fn get_defid_from_var(&self, varid: VarId) -> Option<DefId> {
+        match self.vars.get(varid)? {
+            VarKind::AnonClosure(def)
+            | VarKind::Arg(def)
+            | VarKind::GlobalRef(def)
+            | VarKind::LocalDef(def) => Some(*def),
+            VarKind::Temp { parent } => *parent,
+            VarKind::Ret => None,
+        }
+    }
+
+    #[inline]
     pub(crate) fn add_local_def(&mut self, def: DefId, id: Id) {
         self.ident_to_local
             .insert(id, self.vars.push_and_get_key(VarKind::LocalDef(def)));
