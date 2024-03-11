@@ -955,11 +955,19 @@ impl<'cx> Runner<'cx> for SecretChecker {
                         } else {
                             varid
                         };
-                    if let Some(Value::Object(varid)) =
-                        interp.get_value(def, *varid_argument, Some(projvec_from_str("headers")))
+                    let headers_proj = projvec_from_str("Headers");
+                    let headers_proj_lower = projvec_from_str("headers");
+                    if let Some(Value::Object(varid)) = interp
+                        .get_value(def, *varid_argument, Some(headers_proj))
+                        .or_else(|| {
+                            interp.get_value(def, *varid_argument, Some(headers_proj_lower))
+                        })
                     {
-                        if let Some(Value::Const(_) | Value::Phi(_)) =
-                            interp.get_value(def, *varid, Some(projvec_from_str("Authorization")))
+                        let auth_proj = projvec_from_str("Authorization");
+                        let aut_proj_lower = projvec_from_str("authorization");
+                        if let Some(Value::Const(_) | Value::Phi(_)) = interp
+                            .get_value(def, *varid, Some(auth_proj))
+                            .or_else(|| interp.get_value(def, *varid, Some(aut_proj_lower)))
                         {
                             let vuln =
                                 SecretVuln::new(interp.callstack(), interp.env(), interp.entry());
