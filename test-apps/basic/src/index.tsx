@@ -1,5 +1,5 @@
 import ForgeUI, { render, Fragment, Macro, Text } from '@forge/ui';
-import api, { route } from '@forge/api';
+import api, { route, fetch } from '@forge/api';
 import { testFn } from './test';
 
 const foo = () => {
@@ -29,12 +29,19 @@ const App = () => {
     }
   }
 
-    testObject.someFunction();
+
+// also test for if the `authorization` property contains some uppercase or
+// lowercase letters (they all get normalized to lowercase, so they all map to the same header)
 
 
-  // foo();
-  // test_function("test_word");
-  // testFn();
+    let h = { headers: { } }
+    h.headers.authorization = "test";
+
+    fetch("url", h)
+
+  foo();
+  test_function("test_word");
+  testFn();
   return (
     <Fragment>
       <Text>Hello world!</Text>
