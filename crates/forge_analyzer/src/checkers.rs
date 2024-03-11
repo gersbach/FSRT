@@ -767,13 +767,13 @@ impl JoinSemiLattice for SecretState {
 impl<'cx> Dataflow<'cx> for SecretDataflow {
     type State = SecretState;
 
-    fn with_interp<C: crate::interp::Runner<'cx, State = Self::State>>(
+    fn with_interp<C: Runner<'cx, State = Self::State>>(
         _interp: &Interp<'cx, C>,
     ) -> Self {
         Self { needs_call: vec![] }
     }
 
-    fn transfer_intrinsic<C: crate::interp::Runner<'cx, State = Self::State>>(
+    fn transfer_intrinsic<C: Runner<'cx, State = Self::State>>(
         &mut self,
         _interp: &mut Interp<'cx, C>,
         _def: DefId,
@@ -781,12 +781,12 @@ impl<'cx> Dataflow<'cx> for SecretDataflow {
         _block: &'cx BasicBlock,
         _intrinsic: &'cx Intrinsic,
         initial_state: Self::State,
-        _operands: SmallVec<[crate::ir::Operand; 4]>,
+        _operands: SmallVec<[Operand; 4]>,
     ) -> Self::State {
         initial_state
     }
 
-    fn transfer_call<C: crate::interp::Runner<'cx, State = Self::State>>(
+    fn transfer_call<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &Interp<'cx, C>,
         _def: DefId,
@@ -803,7 +803,7 @@ impl<'cx> Dataflow<'cx> for SecretDataflow {
         SecretState::ALL
     }
 
-    fn join_term<C: crate::interp::Runner<'cx, State = Self::State>>(
+    fn join_term<C: Runner<'cx, State = Self::State>>(
         &mut self,
         interp: &mut Interp<'cx, C>,
         def: DefId,
@@ -1585,6 +1585,17 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                             )
                         } else {
                             interp.value_manager.varid_to_value.clone().iter().for_each(
+                                |((_defid, varid_rval_potential), value)| {
+                                    if varid_rval_potential == &varid_rval && _defid == &def {
+                                        interp.add_value(
+                                            def,
+                                            *varid,
+                                            value.clone(),
+                                        )
+                                    }
+                                },
+                            );
+                            interp.value_manager.varid_to_value_proj.clone().iter().for_each(
                                 |((_defid, varid_rval_potential, _projection), value)| {
                                     if varid_rval_potential == &varid_rval && _defid == &def {
                                         interp.add_value_with_projection(

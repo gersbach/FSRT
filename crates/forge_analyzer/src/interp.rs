@@ -32,7 +32,8 @@ use crate::{
     worklist::WorkList,
 };
 
-pub type DefinitionAnalysisMap = FxHashMap<(DefId, VarId, ProjectionVec), Value>;
+pub type DefinitionProjectionMap = FxHashMap<(DefId, VarId, ProjectionVec), Value>;
+pub type DefinitionMap = FxHashMap<(DefId, VarId), Value>;
 pub type ProjectionVec = SmallVec<[Projection; 1]>;
 
 pub trait JoinSemiLattice: Sized + Ord {
@@ -515,7 +516,8 @@ pub struct Interp<'cx, C: Runner<'cx>> {
 
 #[derive(Debug)]
 pub struct ValueManager {
-    pub varid_to_value: DefinitionAnalysisMap,
+    pub varid_to_value_proj: DefinitionProjectionMap,
+    pub varid_to_value: DefinitionMap,
     pub defid_to_value: FxHashMap<DefId, Value>,
     pub expecting_value: VecDeque<(DefId, (VarId, DefId))>,
     pub expected_return_values: HashMap<DefId, (DefId, VarId)>,
@@ -534,8 +536,12 @@ impl ValueManager {
         projection_vec: ProjectionVec,
         value: Value,
     ) {
-        self.varid_to_value
-            .insert((def_id_func, var_id, projection_vec), value);
+        if projection_vec.is_empty() {
+            self.varid_to_value_proj.insert((def_id_func, var_id, projection_vec), value);
+        } else {
+            self.varid_to_value
+                .insert((def_id_func, var_id), value);
+        }
     }
 }
 
@@ -622,7 +628,8 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             callstack_arguments: Vec::new(),
             callstack: RefCell::new(Vec::new()),
             value_manager: ValueManager {
-                varid_to_value: DefinitionAnalysisMap::default(),
+                varid_to_value_proj: DefinitionProjectionMap::default(),
+                varid_to_value: DefinitionMap::default(),
                 defid_to_value: FxHashMap::default(),
                 expected_return_values: HashMap::default(),
                 expecting_value: VecDeque::default(),
@@ -637,7 +644,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     }
 
     #[inline]
-    pub fn get_defs(&self) -> DefinitionAnalysisMap {
+    pub fn get_defs(&self) -> DefinitionMap {
         self.value_manager.varid_to_value.clone()
     }
 
@@ -714,10 +721,15 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         varid: VarId,
         projection: Option<ProjectionVec>,
     ) -> Option<&Value> {
-        let projections = projection.unwrap_or_default();
-        self.value_manager
-            .varid_to_value
-            .get(&(defid_block, varid, projections))
+        if projection.as_ref().map_or(false, |v| !v.is_empty()) {
+            self.value_manager
+                .varid_to_value_proj
+                .get(&(defid_block, varid, projection.unwrap()))
+        } else {
+            self.value_manager
+                .varid_to_value
+                .get(&(defid_block, varid))
+        }
     }
 
     #[inline]
