@@ -1592,7 +1592,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                                 lval.projections.clone(),
                             )
                         } else {
-                            interp.value_manager.varid_to_value.clone().iter().for_each(
+                            interp.get_defs().iter().for_each(
                                 |((_defid, varid_rval_potential), value)| {
                                     if varid_rval_potential == &varid_rval && _defid == &def {
                                         interp.add_value(
@@ -1603,7 +1603,7 @@ impl<'cx> Dataflow<'cx> for DefintionAnalysisRunner {
                                     }
                                 },
                             );
-                            interp.value_manager.varid_to_value_proj.clone().iter().for_each(
+                            interp.get_defs_with_proj().iter().for_each(
                                 |((_defid, varid_rval_potential, _projection), value)| {
                                     if varid_rval_potential == &varid_rval && _defid == &def {
                                         interp.add_value_with_projection(

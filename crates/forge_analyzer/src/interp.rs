@@ -522,7 +522,6 @@ pub struct ValueManager {
     pub expecting_value: VecDeque<(DefId, (VarId, DefId))>,
     pub expected_return_values: HashMap<DefId, (DefId, VarId)>,
 }
-
 impl ValueManager {
     pub fn insert_var(&mut self, def_id_func: DefId, var_id: VarId, value: Value) {
         let projection_vec = ProjectionVec::new();
@@ -536,7 +535,7 @@ impl ValueManager {
         projection_vec: ProjectionVec,
         value: Value,
     ) {
-        if projection_vec.is_empty() {
+        if !projection_vec.is_empty() {
             self.varid_to_value_proj.insert((def_id_func, var_id, projection_vec), value);
         } else {
             self.varid_to_value
@@ -643,9 +642,20 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         }
     }
 
+    // #[inline]
+    // pub fn set_varid_manager(&mut self, var_idmanager: &VarIDManager) {
+    //     self.value_manager.varid_manager.varid_to_value_proj = var_idmanager.clone().varid_to_value_proj;
+    //     self.value_manager.varid_manager.varid_to_value = var_idmanager.clone().varid_to_value;
+    //
+    // }
+
     #[inline]
     pub fn get_defs(&self) -> DefinitionMap {
         self.value_manager.varid_to_value.clone()
+    }
+    #[inline]
+    pub fn get_defs_with_proj(&self) -> DefinitionProjectionMap {
+        self.value_manager.varid_to_value_proj.clone()
     }
 
     #[inline]
