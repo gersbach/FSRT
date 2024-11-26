@@ -20,12 +20,23 @@ trait ReportExt {
     fn contains_perm_vuln(&self, expected_len: usize) -> bool;
 
     fn contains_vulns(&self, expected_len: i32) -> bool;
+
+    fn contains_authz_vuln(&self, expected_len: usize) -> bool;
 }
 
 impl ReportExt for Report {
     #[inline]
     fn has_no_vulns(&self) -> bool {
         self.into_vulns().is_empty()
+    }
+
+    #[inline]
+    fn contains_authz_vuln(&self, expected_len: usize) -> bool {
+        self.into_vulns()
+            .iter()
+            .filter(|vuln| vuln.check_name().starts_with("Authorization-"))
+            .count()
+            == expected_len
     }
 
     #[inline]
@@ -66,33 +77,42 @@ impl fmt::Debug for MockForgeProject<'_> {
 }
 
 #[allow(dead_code)]
-impl MockForgeProject<'_> {
-    pub fn files_from_string(string: &str) -> Self {
-        let forge_manifest = ForgeManifest::create_manifest_with_func_mod(FunctionMod {
-            key: "main",
-            handler: "index.run",
-            providers: None,
-        });
+impl<'a> MockForgeProject<'a> {
+    pub fn files_from_string(string: &'a str) -> Self {
+        let different_files = string.split("//").filter(|file| !file.is_empty());
+
+        let manifest = if let Some(manifest_string) = different_files.clone().find(|string| {
+            string
+                .replace("//", "")
+                .trim_start()
+                .starts_with("manifest.yaml")
+                || string
+                    .trim_start()
+                    .replace("//", "")
+                    .starts_with("manifest.yml")
+        }) {
+            serde_yaml::from_str(manifest_string.split_once('\n').unwrap().1).unwrap_or_default()
+        } else {
+            ForgeManifest::create_manifest_with_func_mod(FunctionMod {
+                key: "main",
+                handler: "index.run",
+                providers: None,
+            })
+        };
 
         let mut mock_forge_project = MockForgeProject {
             files_name_to_source: HashMap::new(),
-            test_manifest: forge_manifest,
+            test_manifest: manifest.to_owned(),
             cm: Arc::default(),
         };
-
-        let different_files = string
-            .split("//")
-            .map(|f| f.replace("//", "").trim().to_string())
-            .filter(|file| !file.is_empty());
 
         for file in different_files {
             let (file_name, file_source) = file.split_once('\n').unwrap();
             mock_forge_project.add_file(
-                file_name.replace("\"", "").trim(),
-                file_source.replace("\"", ""),
+                file_name.replace("//", "").replace('"', "").trim(),
+                file_source.replace('"', ""),
             );
         }
-
         mock_forge_project
     }
 

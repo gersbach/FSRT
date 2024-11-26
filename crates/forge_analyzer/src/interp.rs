@@ -425,6 +425,25 @@ impl ValueManager {
                 .insert((def_id_func, var_id, projection_vec), value);
         }
     }
+
+    pub fn get_var_with_projection(
+        &self,
+        def_id_func: DefId,
+        var_id: VarId,
+        projection_vec: ProjectionVec,
+    ) -> Option<&Value> {
+        if let Some(value) =
+            self.varid_to_value_with_proj
+                .get(&(def_id_func, var_id, projection_vec.clone()))
+        {
+            Some(value)
+        } else if let Some(Value::Object(var_id)) = self.varid_to_value.get(&(def_id_func, var_id))
+        {
+            self.get_var_with_projection(def_id_func, *var_id, projection_vec)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -585,7 +604,8 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
             .insert_var_with_projection(defid_block, varid, projections, value);
     }
 
-    // this function takes in an operand checks for previous values and returns a value optional
+    // This function takes in an operand, checks for existing values, and returns a value optional.
+    // There are 4 cases for the existing values.
     #[inline]
     pub fn add_value_to_definition(&mut self, defid_block: DefId, lval: Variable, rvalue: Rvalue) {
         if let Variable {
@@ -742,12 +762,15 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 projections,
             }) => {
                 let (varid, projections) = self.get_farthest_obj(defid_block, varid, projections);
-                if self.is_obj(varid) {
-                    return Value::Object(varid);
-                }
                 match self.get_value(defid_block, varid, Some(projections)) {
                     Some(value) => value.clone(),
-                    None => Value::Unknown,
+                    None => {
+                        if self.is_obj(varid) {
+                            Value::Object(varid)
+                        } else {
+                            Value::Unknown
+                        }
+                    }
                 }
             }
             Operand::Lit(str) => {
@@ -801,8 +824,7 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         match projection {
             Some(projection) if !projection.is_empty() => self
                 .value_manager
-                .varid_to_value_with_proj
-                .get(&(defid_block, varid, projection)),
+                .get_var_with_projection(defid_block, varid, projection),
             _ => self.value_manager.varid_to_value.get(&(defid_block, varid)),
         }
     }
@@ -882,11 +904,11 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
     pub fn callees(
         &self,
         caller: DefId,
-    ) -> impl DoubleEndedIterator<Item = (DefId, Location)> + '_ {
+    ) -> impl DoubleEndedIterator<Item = (DefId, Location)> + use<'_, C> {
         self.call_graph
             .callgraph
             .range((caller, DefId::new(0))..(caller, DefId::new(u32::MAX)))
-            .map(|(&(_, callee), &loc)| (callee, loc))
+            .map(move |(&(_, callee), &loc)| (callee, loc))
     }
 
     fn run(&mut self, func_def: DefId) {

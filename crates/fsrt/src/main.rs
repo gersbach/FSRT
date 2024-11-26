@@ -30,7 +30,6 @@ use forge_analyzer::{
     definitions::{Const, DefId, PackageData, Value},
     interp::Interp,
     reporter::{Report, Reporter},
-    resolver::resolve_calls,
 };
 
 use crate::forge_project::{ForgeProjectFromDir, ForgeProjectTrait};
@@ -45,17 +44,13 @@ pub struct Args {
     #[arg(short, long)]
     debug: bool,
 
-    /// Dump a graphviz formatted callgraph
-    #[arg(long)]
-    callgraph: bool,
-
-    /// Dump a graphviz formatted control flow graph of the function specified in `--function`
-    #[arg(long)]
-    cfg: bool,
-
     /// Dump the IR for the specified function
     #[arg(long)]
     dump_ir: Option<String>,
+
+    /// Dump the Dominator Tree for specified file
+    #[arg(long)]
+    dump_dt: Option<String>,
 
     /// A specific function to scan. Must be an entrypoint specified in `manifest.yml`
     #[arg(short, long)]
@@ -245,9 +240,14 @@ pub(crate) fn scan_directory<'a>(
         });
 
     proj.add_funcs(funcrefs);
-    resolve_calls(&mut proj.ctx);
+    // resolve_calls(&mut proj.ctx);
     if let Some(func) = opts.dump_ir.as_ref() {
         proj.env.dump_function(&mut std::io::stdout().lock(), func);
+        std::process::exit(0);
+    }
+
+    if let Some(func) = opts.dump_dt.as_ref() {
+        proj.env.dump_tree(&mut std::io::stdout().lock(), func);
         std::process::exit(0);
     }
 
@@ -460,9 +460,9 @@ fn main() -> Result<()> {
         .init();
     let dirs = std::mem::take(&mut args.dirs);
 
-    let secret_packages: Vec<PackageData> = std::fs::File::open("secretdata.yaml")
-        .map(|f| serde_yaml::from_reader(f).expect("Failed to deserialize packages"))
-        .unwrap_or_else(|_| vec![]);
+    let secretdata_file = include_str!("../../../secretdata.yaml");
+    let secret_packages: Vec<PackageData> =
+        serde_yaml::from_str(secretdata_file).expect("Failed to deserialize packages");
 
     for dir in dirs {
         let mut manifest_file = dir.join("manifest.yaml");

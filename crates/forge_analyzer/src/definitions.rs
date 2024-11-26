@@ -1,10 +1,16 @@
 #![allow(dead_code, unused)]
 
+use std::borrow::BorrowMut;
+use std::env;
+use std::hash::Hash;
 use std::{borrow::Borrow, fmt, mem};
 
 use crate::utils::{calls_method, eq_prop_name};
 use forge_file_resolver::{FileResolver, ForgeResolver};
 use forge_utils::{create_newtype, FxHashMap};
+use std::collections::{HashMap, HashSet};
+use swc_core::common::pass::define;
+use swc_core::ecma::utils::var;
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -16,7 +22,7 @@ use swc_core::{
         ast::{
             ArrayLit, ArrayPat, ArrowExpr, AssignExpr, AssignOp, AssignPat, AssignPatProp,
             AssignProp, AssignTarget, AwaitExpr, BinExpr, BindingIdent, BlockStmt, BlockStmtOrExpr,
-            BreakStmt, CallExpr, Callee, ClassDecl, ClassExpr, ClassMethod, ComputedPropName,
+            Bool, BreakStmt, CallExpr, Callee, ClassDecl, ClassExpr, ClassMethod, ComputedPropName,
             CondExpr, Constructor, ContinueStmt, Decl, DefaultDecl, DoWhileStmt, ExportAll,
             ExportDecl, ExportDefaultDecl, ExportDefaultExpr, ExportNamedSpecifier,
             ExportSpecifier, Expr, ExprOrSpread, ExprStmt, FnDecl, FnExpr, ForHead, ForInStmt,
@@ -138,6 +144,7 @@ pub fn run_resolver(
 ) -> Environment {
     let mut environment = Environment::new();
 
+    // This for loop parses each token of each code statement in the file.
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut export_collector = ExportCollector {
             res_table: &mut environment.resolver,
@@ -156,6 +163,7 @@ pub fn run_resolver(
         }
     }
 
+    // The following two for loops iterate through the imported modules of the file.
     let mut foreign = TiVec::default();
     for (curr_mod, module) in modules.iter_enumerated() {
         let mut import_collector = ImportCollector {
@@ -182,7 +190,7 @@ pub fn run_resolver(
         module.visit_with(&mut import_collector);
     }
 
-    // check for required after Definitions pass
+    // This loop runs through the different import modules and corresponding definitions.
     let defs = Definitions::new(
         environment
             .resolver
@@ -226,7 +234,68 @@ pub fn run_resolver(
         module.visit_with(&mut collector);
     }
 
+    // This loop iterates through env's bodies and recreates an updated set of bodies to satisfy SSA form of IR dump.
+    let mut updated_vars: HashMap<VarId, VarId> = HashMap::new();
+    for body in environment.bodies_mut() {
+        // Updates the instruction set with creation of new global reference variables if necessary.
+        for block in body.blocks.iter_mut() {
+            for inst in block.iter_insts_mut() {
+                update_rvalue(inst.rvalue_mut(), &updated_vars);
+                match inst {
+                    Inst::Assign(variable, rvalue) => {
+                        if let Some(var_id) = variable.as_var_id() {
+                            if let Some(updated_var_id) = updated_vars.get_mut(&var_id) {
+                                if variable.projections.is_empty() {
+                                    let var_kind = body.vars.get(var_id).unwrap();
+                                    let new_var_id = body.vars.push_and_get_key(*var_kind);
+                                    variable.base = Base::Var(new_var_id);
+                                    *updated_var_id = new_var_id;
+                                }
+                            } else {
+                                updated_vars.insert(var_id, var_id);
+                            }
+                        }
+                        // else: Skip renaming for variables 'super' or 'this', as VarId = None.
+                    }
+                    Inst::Expr(rvalue) => {}
+                }
+            }
+        }
+        updated_vars.clear();
+    }
     environment
+}
+
+// This is a helper function to run_resolver() 's SSA Form Loop.
+// Input: rvalue of instruction and map of VarIds that have been updated in the SSA Form Loop.
+pub fn update_rvalue(rvalue: &mut Rvalue, updated_vars: &HashMap<VarId, VarId>) {
+    // Updates the VarId in the instruction to persist the changes made by the SSA Form Loop.
+    let update_var = |variable: &mut Variable| {
+        if let Some(op_var_id) = variable.as_var_id() {
+            if let Some(updated_var_id) = updated_vars.get(&op_var_id) {
+                let mut base = &mut variable.base;
+                *base = Base::Var(*updated_var_id);
+            }
+        }
+    };
+
+    // Updates the Rvalue of the instruction.
+    match rvalue {
+        Rvalue::Unary(_, Operand::Var(variable))
+        | Rvalue::Read(Operand::Var(variable))
+        | Rvalue::Bin(_, Operand::Var(variable), _)
+        | Rvalue::Bin(_, _, Operand::Var(variable)) => {
+            update_var(variable);
+        }
+        // Rvalues of Read (Literal), Binary (Literal), Unary (Literal), Call (method), Intrinsic, Phi, and Template can be kept same.
+        Rvalue::Read(_)
+        | Rvalue::Bin(_, _, _)
+        | Rvalue::Unary(_, _)
+        | Rvalue::Call(_, _)
+        | Rvalue::Intrinsic(_, _)
+        | Rvalue::Phi(_)
+        | Rvalue::Template(_) => {}
+    }
 }
 
 /// this struct is a bit of a hack, because we also use it for
@@ -594,7 +663,7 @@ fn normalize_callee_expr(
         in_prop: bool,
     }
 
-    impl<'cx> CalleeNormalizer<'cx> {
+    impl CalleeNormalizer<'_> {
         fn check_prop(&mut self, n: &MemberProp) {
             let old_prop = mem::replace(&mut self.in_prop, true);
             n.visit_with(self);
@@ -903,10 +972,15 @@ fn classify_api_call(expr: &Expr) -> ApiCallKind {
     classifier.kind
 }
 
-impl<'cx> FunctionAnalyzer<'cx> {
+impl FunctionAnalyzer<'_> {
     #[inline]
     fn set_curr_terminator(&mut self, term: Terminator) {
         self.body.set_terminator(self.block, term);
+    }
+
+    #[inline]
+    fn get_curr_terminator(&mut self) -> Option<Terminator> {
+        self.body.get_terminator(self.block)
     }
 
     fn as_intrinsic(&self, callee: &[PropPath], first_arg: Option<&Expr>) -> Option<Intrinsic> {
@@ -931,7 +1005,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 match classify_api_call(first_arg) {
                     ApiCallKind::Unknown => {
                         if is_as_app {
-                            Some(Intrinsic::ApiCall(IntrinsicName::Other))
+                            Some(Intrinsic::ApiCall(function_name))
                         } else {
                             Some(Intrinsic::SafeCall(function_name))
                         }
@@ -950,22 +1024,21 @@ impl<'cx> FunctionAnalyzer<'cx> {
                             Some(Intrinsic::UserFieldAccess)
                         }
                     }
-                    ApiCallKind::Trivial => Some(Intrinsic::SafeCall(IntrinsicName::Other)),
-                    ApiCallKind::Authorize => Some(Intrinsic::Authorize(IntrinsicName::Other)),
+                    ApiCallKind::Trivial => Some(Intrinsic::SafeCall(function_name)),
+                    ApiCallKind::Authorize => Some(Intrinsic::Authorize(function_name)),
                 }
             }
 
             [PropPath::Def(def), PropPath::Static(ref s), ..] if is_storage_read(s) => {
                 match self.res.is_imported_from(def, "@forge/api") {
-                    Some(ImportKind::Named(ref name)) if *name == *"storage" => {
+                    Some(ImportKind::Named(name)) if *name == *"storage" => {
                         Some(Intrinsic::StorageRead)
                     }
                     _ => None,
                 }
             }
             [PropPath::Def(def), ..] if self.res.is_imported_from(def, "@forge/api").is_some() => {
-                if let Some(ImportKind::Named(ref name)) =
-                    self.res.is_imported_from(def, "@forge/api")
+                if let Some(ImportKind::Named(name)) = self.res.is_imported_from(def, "@forge/api")
                 {
                     if *name == *"authorize" {
                         return Some(Intrinsic::Authorize(IntrinsicName::Other));
@@ -1051,7 +1124,9 @@ impl<'cx> FunctionAnalyzer<'cx> {
     /// Sets the current block to `block` and returns the previous block.
     #[inline]
     fn goto_block(&mut self, block: BasicBlockId) -> BasicBlockId {
-        self.set_curr_terminator(Terminator::Goto(block));
+        if self.get_curr_terminator().is_none() {
+            self.set_curr_terminator(Terminator::Goto(block));
+        }
         mem::replace(&mut self.block, block)
     }
 
@@ -1217,7 +1292,6 @@ impl<'cx> FunctionAnalyzer<'cx> {
     }
 
     fn lower_call(&mut self, callee: CalleeRef<'_>, args: &[ExprOrSpread]) -> Operand {
-        // debug!("in da lower call");
         let props = normalize_callee_expr(callee, self.res, self.module);
         if let Some(&PropPath::Def(id)) = props.first() {
             if self.res.is_imported_from(id, "@forge/ui").map_or(
@@ -1243,6 +1317,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                         Expr::Fn(FnExpr { ident: _, function }) => {
                             if let Some(body) = &function.body {
                                 self.lower_stmts(&body.stmts);
+
                                 return Operand::UNDEF;
                             }
                         }
@@ -1341,29 +1416,24 @@ impl<'cx> FunctionAnalyzer<'cx> {
         if let JSXExpr::Expr(expr) = &n.expr {
             // FIXME: Add entry point for the functions that are called as part of the handlers
             self.lower_expr(expr, None);
-            if let Some(second_char) = ident_value.sym.chars().nth(2) {
-                if ident_value.sym.starts_with("on") && second_char.is_uppercase() {
-                    match &**expr {
-                        Expr::Arrow(arrow_expr) => {
-                            if let BlockStmtOrExpr::Expr(expr) = &*arrow_expr.body {
-                                self.lower_expr(expr, None);
-                            }
-                        }
-                        Expr::Ident(ident) => {
-                            let defid = self.res.sym_to_id(ident.to_id(), self.module);
-                            let varid = self.body.get_or_insert_global(defid.unwrap());
-                            self.body.push_tmp(
-                                self.block,
-                                Rvalue::Call(
-                                    Operand::Var(Variable::from(varid)),
-                                    SmallVec::default(),
-                                ),
-                                None,
-                            );
-                        }
-                        _ => {}
+            match &**expr {
+                // JSX handler names should start with "on[A-Z]"
+                _ if !matches!(ident_value.sym.as_bytes(), [b'o', b'n', b'A'..=b'Z', ..]) => {}
+                Expr::Arrow(arrow_expr) => {
+                    if let BlockStmtOrExpr::Expr(expr) = &*arrow_expr.body {
+                        self.lower_expr(expr, None);
                     }
                 }
+                Expr::Ident(ident) => {
+                    let defid = self.res.sym_to_id(ident.to_id(), self.module);
+                    let varid = self.body.get_or_insert_global(defid.unwrap());
+                    self.body.push_tmp(
+                        self.block,
+                        Rvalue::Call(Operand::Var(Variable::from(varid)), SmallVec::default()),
+                        None,
+                    );
+                }
+                _ => {}
             }
         }
     }
@@ -1535,6 +1605,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     .push_tmp(self.block, Rvalue::Unary(op.into(), arg), None);
                 Operand::with_var(tmp)
             }
+
             Expr::Update(UpdateExpr {
                 op, prefix, arg, ..
             }) => {
@@ -1631,10 +1702,12 @@ impl<'cx> FunctionAnalyzer<'cx> {
             }) => {
                 let cond = self.lower_expr(test, None);
                 let curr = self.block;
-                let rest = self.body.new_block();
-                let cons_block = self.body.new_block();
-                let alt_block = self.body.new_block();
+                let [temp1, temp2, temp3] = self.body.new_blocks();
+                let rest = self.body.new_blockbuilder();
+                let cons_block = self.body.new_blockbuilder();
+                let alt_block = self.body.new_blockbuilder();
                 self.set_curr_terminator(Terminator::If {
+                    // TODO: COME BACK TO?
                     cond,
                     cons: cons_block,
                     alt: alt_block,
@@ -1642,6 +1715,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 self.block = cons_block;
                 let cons = self.lower_expr(cons, None);
                 let cons_phi = self.body.push_tmp(self.block, Rvalue::Read(cons), None);
+
                 self.set_curr_terminator(Terminator::Goto(rest));
                 self.block = alt_block;
                 let alt = self.lower_expr(alt, None);
@@ -1655,6 +1729,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 );
                 Operand::with_var(phi)
             }
+
             Expr::Call(CallExpr { callee, args, .. }) => self.lower_call(callee.into(), args),
             Expr::New(NewExpr { callee, args, .. }) => {
                 if let Expr::Ident(ident) = &**callee {
@@ -1755,12 +1830,28 @@ impl<'cx> FunctionAnalyzer<'cx> {
         }
     }
 
+    // Lowers all statements from the given `stmts`.
+    // If a return is encounted, return early to prevent
+    //      unreachable statements that come afterwards from being lowered.
     fn lower_stmts(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
             self.lower_stmt(stmt);
+            if let Stmt::Return(_) = stmt {
+                return;
+            }
         }
     }
 
+    // Lowers a single statement by pushing corresponding instruction(s)/expression(s)
+    // onto self.body.blockbuilders[block].
+    //
+    // Corresponding instruction(s)/expression(s) are initially placed in
+    // self.body.blockbuilders[block] and transferred to self.body.blocks[block]
+    // once the block's terminator gets set.
+    //
+    // B/c of this, an empty block is pushed to self.body.blocks whenever
+    // a new block is added to self.body.blockbuilders, to ensure space is allocated
+    // on self.body.blocks for all blocks when instructions are moved.
     fn lower_stmt(&mut self, n: &Stmt) {
         match n {
             Stmt::Block(BlockStmt { stmts, .. }) => self.lower_stmts(stmts),
@@ -1769,6 +1860,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Stmt::With(WithStmt { obj, body, .. }) => {
                 let opnd = self.lower_expr(obj, None);
                 self.body.push_expr(self.block, Rvalue::Read(opnd));
+
                 self.lower_stmt(body);
             }
             Stmt::Return(ReturnStmt { arg, .. }) => {
@@ -1782,17 +1874,29 @@ impl<'cx> FunctionAnalyzer<'cx> {
             Stmt::Labeled(LabeledStmt { label, body, .. }) => {
                 self.lower_stmt(body);
             }
+            // TODO: Lower Break and Continue
             Stmt::Break(BreakStmt { label, .. }) => {}
             Stmt::Continue(ContinueStmt { label, .. }) => {}
             Stmt::If(IfStmt {
                 test, cons, alt, ..
             }) => {
-                let [cons_block, cont] = self.body.new_blocks();
+                // Adds two blocks to the body:
+                //  - cons_block: block to store insts that run if the test condition of the Stmt::If is true
+                //  - cont:       block to store insts that run after the Stmt::If
+                let [temp1, temp2] = self.body.new_blocks();
+                let [cons_block, cont] = self.body.new_blockbuilders();
+
+                // If an alt block (`else` case) is present, add another block to the body
                 let alt_block = if let Some(alt) = alt {
-                    let alt_block = self.body.new_block();
+                    let temp3 = self.body.new_block();
+                    let alt_block = self.body.new_blockbuilder();
                     let old_block = mem::replace(&mut self.block, alt_block);
                     self.lower_stmt(alt);
-                    self.set_curr_terminator(Terminator::Goto(cont));
+
+                    if self.get_curr_terminator().is_none() {
+                        self.set_curr_terminator(Terminator::Goto(cont));
+                    }
+
                     self.block = old_block;
                     alt_block
                 } else {
@@ -1806,6 +1910,7 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 });
                 self.block = cons_block;
                 self.lower_stmt(cons);
+
                 self.goto_block(cont);
             }
             Stmt::Switch(SwitchStmt {
@@ -1834,7 +1939,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 }
             }
             Stmt::While(WhileStmt { test, body, .. }) => {
-                let [check, cont, body_id] = self.body.new_blocks();
+                let [temp1, temp2, temp3] = self.body.new_blocks();
+                let [check, cont, body_id] = self.body.new_blockbuilders();
                 self.set_curr_terminator(Terminator::Goto(check));
                 self.block = check;
                 let cond = self.lower_expr(test, None);
@@ -1849,7 +1955,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
                 self.block = cont;
             }
             Stmt::DoWhile(DoWhileStmt { test, body, .. }) => {
-                let [check, cont, body_id] = self.body.new_blocks();
+                let [temp1, temp2, temp3] = self.body.new_blocks();
+                let [check, cont, body_id] = self.body.new_blockbuilders();
                 self.set_curr_terminator(Terminator::Goto(body_id));
                 self.block = body_id;
                 self.lower_stmt(body);
@@ -1879,7 +1986,8 @@ impl<'cx> FunctionAnalyzer<'cx> {
                     }
                     None => {}
                 }
-                let [check, cont, body_id] = self.body.new_blocks();
+                let [temp1, temp2, temp3] = self.body.new_blocks();
+                let [check, cont, body_id] = self.body.new_blockbuilders();
                 self.goto_block(check);
                 if let Some(test) = test {
                     let cond = self.lower_expr(test, None);
@@ -2238,7 +2346,18 @@ impl Visit for FunctionCollector<'_> {
                     };
                     if let Some(BlockStmt { stmts, .. }) = &n.body {
                         analyzer.lower_stmts(stmts);
-                        let body = analyzer.body;
+                        let mut body = analyzer.body;
+
+                        let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
+                        for (id, block) in body.blocks.iter_enumerated() {
+                            if !block.set_term_called {
+                                blocks_to_update.push(id);
+                            }
+                        }
+                        for id in blocks_to_update {
+                            body.set_terminator(id, Terminator::Ret);
+                        }
+
                         *self.res.def_mut(*owner).expect_body() = body;
                     }
                 }
@@ -2285,7 +2404,18 @@ impl Visit for FunctionCollector<'_> {
                     };
                     if let Some(BlockStmt { stmts, .. }) = &n.function.body {
                         analyzer.lower_stmts(stmts);
-                        let body = analyzer.body;
+                        let mut body = analyzer.body;
+
+                        let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
+                        for (id, block) in body.blocks.iter_enumerated() {
+                            if !block.set_term_called {
+                                blocks_to_update.push(id);
+                            }
+                        }
+                        for id in blocks_to_update {
+                            body.set_terminator(id, Terminator::Ret);
+                        }
+
                         *self.res.def_mut(*owner).expect_body() = body;
                     }
                 }
@@ -2346,7 +2476,19 @@ impl Visit for FunctionCollector<'_> {
                     .push_inst(analyzer.block, Inst::Assign(RETURN_VAR, Rvalue::Read(opnd)));
             }
         }
-        *self.res.def_mut(owner).expect_body() = analyzer.body;
+        let mut body = analyzer.body;
+
+        let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
+        for (id, block) in body.blocks.iter_enumerated() {
+            if !block.set_term_called {
+                blocks_to_update.push(id);
+            }
+        }
+        for id in blocks_to_update {
+            body.set_terminator(id, Terminator::Ret);
+        }
+
+        *self.res.def_mut(owner).expect_body() = body;
         self.parent = old_parent;
     }
 
@@ -2454,6 +2596,10 @@ impl Visit for FunctionCollector<'_> {
                                 analyzer.block,
                                 Inst::Assign(RETURN_VAR, Rvalue::Read(opnd)),
                             );
+
+                            analyzer
+                                .body
+                                .set_terminator(analyzer.block, Terminator::Ret);
                             *self.res.def_mut(owner).expect_body() = analyzer.body;
                             self.parent = old_parent;
                         }
@@ -2581,7 +2727,21 @@ impl FunctionCollector<'_> {
         };
         if let Some(BlockStmt { stmts, .. }) = &n.body {
             analyzer.lower_stmts(stmts);
-            let body = analyzer.body;
+            let mut body = analyzer.body;
+
+            let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
+            for (id, block) in body.blocks.iter_enumerated() {
+                if !block.set_term_called {
+                    blocks_to_update.push(id);
+                }
+            }
+
+            // Ensures that instructions of all blocks from body.blockbuilders
+            // are moved to body.blocks
+            for id in blocks_to_update {
+                body.set_terminator(id, Terminator::Ret);
+            }
+
             *self.res.def_mut(owner).expect_body() = body;
         }
     }
@@ -3116,7 +3276,17 @@ impl Visit for GlobalCollector<'_> {
             }
         }
         analyzer.lower_stmts(all_module_items.as_slice());
-        let body = analyzer.body;
+        let mut body = analyzer.body;
+
+        let mut blocks_to_update: Vec<BasicBlockId> = Vec::new();
+        for (id, block) in body.blocks.iter_enumerated() {
+            if !block.set_term_called {
+                blocks_to_update.push(id);
+            }
+        }
+        for id in blocks_to_update {
+            body.set_terminator(id, Terminator::Ret);
+        }
 
         *self.res.def_mut(owner).expect_body() = body;
     }
@@ -3311,6 +3481,12 @@ impl Environment {
     #[inline]
     pub fn bodies(&self) -> impl Iterator<Item = &Body> + '_ {
         self.defs.funcs.iter()
+    }
+
+    // Mutable iterator for bodies of the environment
+    #[inline]
+    pub fn bodies_mut(&mut self) -> impl Iterator<Item = &mut Body> + '_ {
+        self.defs.funcs.iter_mut()
     }
 
     #[inline]
