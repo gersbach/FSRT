@@ -10,12 +10,13 @@ use forge_permission_resolver::permissions_resolver::{
 };
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fmt, fs,
     os::unix::prelude::OsStrExt,
     path::{Path, PathBuf},
 };
 
+use graphql_parser::query::{parse_query, Definition, OperationDefinition, Selection};
 use tracing::{debug, warn};
 use tracing_subscriber::{prelude::*, EnvFilter};
 use tracing_tree::HierarchicalLayer;
@@ -26,7 +27,7 @@ use forge_analyzer::{
         PermissionVuln, SecretChecker,
     },
     ctx::ModId,
-    definitions::{DefId, PackageData},
+    definitions::{Const, DefId, PackageData, Value},
     interp::Interp,
     reporter::{Report, Reporter},
     resolver::resolve_calls,
@@ -35,6 +36,7 @@ use forge_analyzer::{
 use crate::forge_project::{ForgeProjectFromDir, ForgeProjectTrait};
 use forge_loader::manifest::Entrypoint;
 use walkdir::WalkDir;
+
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Parser, Debug)]
@@ -95,6 +97,8 @@ pub enum Error {
     UnableToReport,
 }
 
+impl std::error::Error for Error {}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -104,7 +108,69 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+fn check_graphql_and_perms(val: &Value) -> Vec<&str> {
+    let mut operations = vec![];
+    match val {
+        Value::Const(Const::Literal(s)) => operations.extend_from_slice(&parse_graphql(s)),
+        Value::Phi(vals) => vals.iter().for_each(|val| match val {
+            Const::Literal(s) => operations.extend_from_slice(&parse_graphql(s)),
+        }),
+        _ => {}
+    }
+    // TODO : Build out permission resolver here
+
+    let permissions_resolver: HashMap<(&str, &str), &str> =
+        [(("compass", "searchTeams"), "read:component:compass")]
+            .iter()
+            .cloned()
+            .collect();
+
+    operations
+        .iter()
+        .filter(|f| permissions_resolver.contains_key(f))
+        .map(|f| permissions_resolver.get(f).unwrap().to_owned())
+        .collect()
+}
+
+fn parse_graphql(s: &str) -> Vec<(&str, &str)> {
+    let mut operations = vec![];
+    if let std::result::Result::Ok(doc) = parse_query::<&str>(s) {
+        doc.definitions.into_iter().for_each(|operation| {
+            if let Definition::Operation(op) = operation {
+                match op {
+                    OperationDefinition::Mutation(mutation) => {
+                        mutation.selection_set.items.into_iter().for_each(|f| {
+                            operations.extend_from_slice(&get_field_and_operation(f));
+                        });
+                    }
+                    OperationDefinition::Query(query) => {
+                        query.selection_set.items.into_iter().for_each(|f| {
+                            operations.extend_from_slice(&get_field_and_operation(f));
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        })
+    }
+    operations
+}
+
+fn get_field_and_operation<'a>(selection: Selection<'a, &'a str>) -> Vec<(&str, &str)> {
+    let mut vec = vec![];
+    if let Selection::Field(type_field) = selection {
+        type_field
+            .selection_set
+            .items
+            .into_iter()
+            .for_each(|operation_field| {
+                if let Selection::Field(operation) = operation_field {
+                    vec.push((type_field.name, operation.name))
+                }
+            });
+    }
+    vec
+}
 
 fn is_js_file<P: AsRef<Path>>(path: P) -> bool {
     matches!(
@@ -349,7 +415,37 @@ pub(crate) fn scan_directory<'a>(
         }
     }
 
-    if run_permission_checker && !perm_interp.permissions.is_empty() {
+    let mut used_graphql_perms: Vec<&str> = definition_analysis_interp
+        .value_manager
+        .varid_to_value_with_proj
+        .values()
+        .flat_map(check_graphql_and_perms)
+        .collect();
+
+    let graphql_perms_varid: Vec<&str> = definition_analysis_interp
+        .value_manager
+        .varid_to_value
+        .values()
+        .flat_map(check_graphql_and_perms)
+        .collect();
+
+    let graphql_perms_defid: Vec<&str> = definition_analysis_interp
+        .value_manager
+        .defid_to_value
+        .values()
+        .flat_map(check_graphql_and_perms)
+        .collect();
+
+    used_graphql_perms.extend_from_slice(&graphql_perms_defid);
+    used_graphql_perms.extend_from_slice(&graphql_perms_varid);
+
+    let final_perms: Vec<&String> = perm_interp
+        .permissions
+        .iter()
+        .filter(|f| !used_graphql_perms.contains(&&***f))
+        .collect();
+
+    if run_permission_checker && !final_perms.is_empty() {
         reporter.add_vulnerabilities([PermissionVuln::new(perm_interp.permissions)]);
     }
 
