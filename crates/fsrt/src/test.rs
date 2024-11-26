@@ -1,5 +1,5 @@
 use crate::{forge_project::ForgeProjectTrait, scan_directory, Args};
-use clap::{Arg, Parser};
+use clap::Parser;
 use forge_analyzer::definitions::PackageData;
 use forge_analyzer::reporter::Report;
 use forge_loader::manifest::{ForgeManifest, FunctionMod};
@@ -108,6 +108,9 @@ impl<'a> MockForgeProject<'a> {
 
         for file in different_files {
             let (file_name, file_source) = file.split_once('\n').unwrap();
+            if file_name.trim() == "manifest.yml" || file_name.trim() == "manifest.yaml" {
+                continue;
+            }
             mock_forge_project.add_file(
                 file_name.replace("//", "").replace('"', "").trim(),
                 file_source.replace('"', ""),
@@ -312,6 +315,328 @@ fn secret_vuln_global_import() {
     let scan_result = scan_directory_test(test_forge_project);
     assert!(scan_result.contains_secret_vuln(1));
     assert!(scan_result.contains_vulns(1))
+}
+
+#[test]
+fn secret_vuln_object() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Macro } from '@forge/ui';
+        import * as atlassian_jwt from 'atlassian-jwt';
+
+        function App() { 
+
+            let dict = {};
+            dict.secret = 'secret';
+
+            atlassian_jwt.encodeSymmetric(dict.secret, dict.secret);
+        } 
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    println!("scan_result {scan_result:?}");
+    assert!(scan_result.contains_secret_vuln(1));
+    assert!(scan_result.contains_vulns(1))
+}
+
+#[test]
+fn secret_vuln_in_use_effect_hook() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Macro, useEffect } from '@forge/ui';
+        import * as atlassian_jwt from 'atlassian-jwt';
+
+        function App() { 
+
+            useEffect(() => {
+                let dict = { secret: 'secret' };
+
+                atlassian_jwt.encodeSymmetric({}, dict.secret);
+            })
+
+            return (
+                <Fragment>
+                    <Text>Hello world!</Text>
+                </Fragment>
+            );
+        } 
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_secret_vuln(1));
+    assert!(scan_result.contains_vulns(1))
+}
+
+#[test]
+fn secret_vuln_object_unknown() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Macro } from '@forge/ui';
+        import * as atlassian_jwt from 'atlassian-jwt';
+
+        function App() { 
+
+            let dict = { secret: 'secret' };
+
+            atlassian_jwt.encodeSymmetric({}, dict.secret);
+
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        } 
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_secret_vuln(1));
+    assert!(scan_result.contains_vulns(1))
+}
+
+#[test]
+// Disabling test due to SSA Form fix changes.
+fn secret_vuln_object_reassignment() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Macro } from '@forge/ui';
+        import * as atlassian_jwt from 'atlassian-jwt';
+
+        function App() { 
+
+            let dict = {};
+            dict.secret = 'secret';
+
+            let newDict = {};
+            newDict.anotherSecret = dict.secret;
+
+            atlassian_jwt.encodeSymmetric({}, newDict.anotherSecret);
+
+            return (
+                <Fragment>
+                    <Text>Hello world!</Text>
+                </Fragment>
+            );
+        } 
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_vulns(1))
+}
+
+#[test]
+fn unauthz_vuln_function_called_in_object() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Fragment, Macro, Text } from '@forge/ui';
+        import api, { route, fetch } from '@forge/api';
+
+        const App = () => {
+
+            let goodObject = {
+                someFunction() {}
+            }
+
+            let badObject = {
+                someFunction() {
+                const res = api.asApp().requestConfluence(route`/rest/api/3/test`);
+                return res;
+                }
+            }
+
+            goodObject.someFunction()
+
+
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        };
+
+        export const run = render(<Macro app={<App />} />);
+        
+        // manifest.yml 
+        modules:
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+                handler: nothing
+                description: Inserts Hello world!
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_vulns(0))
+}
+
+#[test]
+fn authz_function_called_in_object() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Fragment, Macro, Text } from '@forge/ui';
+        import api, { route, fetch } from '@forge/api';
+
+        const App = () => {
+
+            let testObject = {
+                someFunction() {
+                const res = api.asApp().requestConfluence(route`/rest/api/3/test`);
+                return res;
+                }
+            }
+
+            testObject.someFunction()
+
+
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        };
+
+        export const run = render(<Macro app={<App />} />);
+        
+        // manifest.yaml 
+        modules:
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+                handler: nothing
+                description: Inserts Hello world!
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_vulns(1))
+}
+
+#[test]
+fn secret_vuln_fetch_header() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Macro } from '@forge/ui';
+        import { fetch } from '@forge/api';
+
+        function App() { 
+
+            let h = { headers: { authorization: 'foo' } };
+            h = h;
+            fetch('url', h)
+            
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        } 
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_secret_vuln(1));
+    assert!(scan_result.contains_vulns(1));
+}
+
+#[test]
+// Disabling test due to SSA Form fix changes.
+fn secret_vuln_fetch_header_reassigned() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import { fetch } from '@forge/api';
+
+        function App() { 
+
+            let h = { headers: { authorization: 'foo' } };
+            
+            let c = h;
+            c.headers = {};
+            fetch('url', h);
+            
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        } 
+
+        export const run = render(<Macro app={<App />} />);",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_vulns(0));
+}
+
+#[test]
+fn basic_authz_vuln() {
+    let test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.jsx
+        import ForgeUI, { render, Macro, Fragment, Text } from '@forge/ui';
+        import api, { route } from '@forge/api';
+
+
+        function getText({ text }) {
+        api.asApp().requestJira(route`rest/api/3/issue`);
+        return 'Hello, world!\n' + text;
+        }
+
+        function App() { 
+
+            getText({ text: 'test' })
+            
+            return (
+                <Fragment>
+                <Text>Hello world!</Text>
+                </Fragment>
+            );
+        } 
+
+        export const run = render(<Macro app={<App />} />);
+        
+        // manifest.yaml 
+        modules:
+            macro:
+              - key: basic-hello-world
+                function: main
+                title: basic
+                handler: nothing
+                description: Inserts Hello world!
+            function:
+              - key: main
+                handler: index.run
+        app:
+            id: ari:cloud:ecosystem::app/07b89c0f-949a-4905-9de9-6c9521035986
+        permissions:
+            scopes: []",
+    );
+
+    let scan_result = scan_directory_test(test_forge_project);
+    assert!(scan_result.contains_authz_vuln(1));
+    assert!(scan_result.contains_vulns(1));
 }
 
 #[test]
