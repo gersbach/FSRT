@@ -34,7 +34,7 @@ impl ReportExt for Report {
     fn contains_authz_vuln(&self, expected_len: usize) -> bool {
         self.into_vulns()
             .iter()
-            .filter(|vuln| vuln.check_name().starts_with("Authorization-"))
+            .filter(|vuln| vuln.check_name().contains("Authorizatio"))
             .count()
             == expected_len
     }
@@ -635,6 +635,7 @@ fn basic_authz_vuln() {
     );
 
     let scan_result = scan_directory_test(test_forge_project);
+    println!("vuln, {:#?}", scan_result);
     assert!(scan_result.contains_authz_vuln(1));
     assert!(scan_result.contains_vulns(1));
 }
@@ -695,6 +696,68 @@ fn correct_scopes() {
             const status = result.status;
 
         } 
+
+        export const run = render(<Macro app={<App />} />);
+        ",
+    );
+
+    test_forge_project
+        .test_manifest
+        .permissions
+        .scopes
+        .push("read:component:compass".into());
+
+    let scan_result = scan_directory_test(test_forge_project);
+    println!("scan_result {:#?}", scan_result);
+    assert!(scan_result.contains_vulns(0))
+}
+
+#[test]
+fn excess_scope_with_fragments() {
+    let mut test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Macro } from '@forge/ui';
+        import * as atlassian_jwt from 'atlassian-jwt';
+
+        function App() { 
+            
+        } 
+
+        const check = `fragment componentParts on CompassCatalogQueryApi{ __typename } 
+        
+        query compass_query($test:CompassSearchTeamsInput!) { compass { ...componentParts } }`
+
+        export const run = render(<Macro app={<App />} />);
+        ",
+    );
+
+    test_forge_project
+        .test_manifest
+        .permissions
+        .scopes
+        .push("read:component:compass".into());
+
+    let scan_result = scan_directory_test(test_forge_project);
+    println!("scan_result {:#?}", scan_result);
+    assert!(scan_result.contains_perm_vuln(1));
+    assert!(scan_result.contains_vulns(1))
+}
+
+#[test]
+fn correct_scopes_with_fragment() {
+    let mut test_forge_project = MockForgeProject::files_from_string(
+        "// src/index.tsx
+        import ForgeUI, { render, Macro } from '@forge/ui';
+        import * as atlassian_jwt from 'atlassian-jwt';
+
+        function App() { 
+
+        const check = `fragment componentParts on CompassCatalogQueryApi{ searchTeams(input: $test) 
+            { ... on CompassSearchTeamsConnection{ nodes { teamId } } } } 
+        
+        query compass_query($test:CompassSearchTeamsInput!) { compass { ...componentParts } }`
+        
+        }
 
         export const run = render(<Macro app={<App />} />);
         ",

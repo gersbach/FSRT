@@ -16,7 +16,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use graphql_parser::query::{parse_query, Definition, OperationDefinition, Selection};
+use graphql_parser::query::{
+    parse_query, Definition, OperationDefinition, Selection, SelectionSet,
+};
 use tracing::{debug, warn};
 use tracing_subscriber::{prelude::*, EnvFilter};
 use tracing_tree::HierarchicalLayer;
@@ -114,56 +116,77 @@ fn check_graphql_and_perms(val: &Value) -> Vec<&str> {
     }
     // TODO : Build out permission resolver here
 
-    let permissions_resolver: HashMap<(&str, &str), &str> =
-        [(("compass", "searchTeams"), "read:component:compass")]
-            .iter()
-            .cloned()
-            .collect();
+    let permissions_resolver: HashMap<(String, String), &str> = [(
+        ("compass".into(), "searchTeams".into()),
+        "read:component:compass",
+    )]
+    .into_iter()
+    .collect();
 
     operations
         .iter()
-        .filter(|f| permissions_resolver.contains_key(f))
-        .map(|f| permissions_resolver.get(f).unwrap().to_owned())
+        .filter_map(|f| permissions_resolver.get(f).copied())
         .collect()
 }
 
-fn parse_graphql(s: &str) -> Vec<(&str, &str)> {
+fn parse_graphql(s: &str) -> Vec<(String, String)> {
     let mut operations = vec![];
+    let mut fragments: HashMap<&str, graphql_parser::query::SelectionSet<'_, &str>> =
+        HashMap::new();
+
     if let std::result::Result::Ok(doc) = parse_query::<&str>(s) {
+        doc.definitions.clone().into_iter().for_each(|d| {
+            if let Definition::Fragment(fragment_def) = d {
+                fragments.insert(fragment_def.name, fragment_def.selection_set);
+            }
+        });
+
         doc.definitions.into_iter().for_each(|operation| {
             if let Definition::Operation(op) = operation {
-                match op {
-                    OperationDefinition::Mutation(mutation) => {
-                        mutation.selection_set.items.into_iter().for_each(|f| {
-                            operations.extend_from_slice(&get_field_and_operation(f));
-                        });
-                    }
-                    OperationDefinition::Query(query) => {
-                        query.selection_set.items.into_iter().for_each(|f| {
-                            operations.extend_from_slice(&get_field_and_operation(f));
-                        });
-                    }
-                    _ => {}
+                let selection_set = match op {
+                    OperationDefinition::Mutation(mutation) => Some(mutation.selection_set),
+                    OperationDefinition::Query(query) => Some(query.selection_set),
+                    OperationDefinition::SelectionSet(set) => Some(set),
+                    _ => None,
+                };
+                if let Some(set) = selection_set {
+                    set.items.into_iter().for_each(|f| {
+                        operations.extend_from_slice(&get_field_and_operation(f, &fragments));
+                    })
                 }
             }
         })
     }
+
     operations
 }
 
-fn get_field_and_operation<'a>(selection: Selection<'a, &'a str>) -> Vec<(&str, &str)> {
+fn get_field_and_operation<'a, 'b>(
+    selection: Selection<'a, &'a str>,
+    fragments: &'b HashMap<&'b str, SelectionSet<'a, &'a str>>,
+) -> Vec<(String, String)> {
     let mut vec = vec![];
-    if let Selection::Field(type_field) = selection {
+
+    if let Selection::Field(mut type_field) = selection {
+        type_field.selection_set.items.clone().iter().for_each(|f| {
+            if let Selection::FragmentSpread(fragment_spread) = f.clone() {
+                if let Some(set) = fragments.get(&fragment_spread.fragment_name) {
+                    type_field.selection_set.items.extend_from_slice(&set.items);
+                }
+            }
+        });
+
         type_field
             .selection_set
             .items
             .into_iter()
             .for_each(|operation_field| {
                 if let Selection::Field(operation) = operation_field {
-                    vec.push((type_field.name, operation.name))
+                    vec.push((type_field.name.into(), operation.name.into()))
                 }
             });
     }
+
     vec
 }
 
