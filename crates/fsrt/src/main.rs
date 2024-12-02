@@ -106,9 +106,9 @@ impl fmt::Display for Error {
 fn check_graphql_and_perms(val: &Value) -> Vec<&str> {
     let mut operations = vec![];
     match val {
-        Value::Const(Const::Literal(s)) => operations.extend_from_slice(&parse_graphql(s)),
+        Value::Const(Const::Literal(s)) => operations.extend(parse_graphql(s)),
         Value::Phi(vals) => vals.iter().for_each(|val| match val {
-            Const::Literal(s) => operations.extend_from_slice(&parse_graphql(s)),
+            Const::Literal(s) => operations.extend(parse_graphql(s)),
         }),
         _ => {}
     }
@@ -125,33 +125,40 @@ fn check_graphql_and_perms(val: &Value) -> Vec<&str> {
         .collect()
 }
 
-fn parse_graphql(s: &str) -> Vec<(&str, &str)> {
+// returns (product, operationName)
+fn parse_graphql(s: &str) -> impl Iterator<Item = (&str, &str)> {
     let mut operations = vec![];
-    let mut fragments: HashMap<&str, graphql_parser::query::SelectionSet<'_, &str>> =
-        HashMap::new();
 
     // collect all fragments
     if let std::result::Result::Ok(doc) = parse_query::<&str>(s) {
-        doc.definitions.clone().into_iter().for_each(|d| {
-            if let Definition::Fragment(fragment_def) = d {
-                fragments.insert(fragment_def.name, fragment_def.selection_set);
-            }
-        });
+        let fragments: HashMap<&str, &Vec<graphql_parser::query::Selection<'_, &str>>> = doc
+            .definitions
+            .iter()
+            .filter_map(|def| match def {
+                Definition::Fragment(fragment) => {
+                    Some((fragment.name, fragment.selection_set.items.as_ref()))
+                }
+                _ => None,
+            })
+            .collect();
 
-        doc.definitions.into_iter().for_each(|operation| {
+        doc.definitions.iter().for_each(|operation| {
             if let Definition::Operation(op) = operation {
                 let possible_selection_set = match op {
-                    OperationDefinition::Mutation(mutation) => Some(mutation.selection_set),
-                    OperationDefinition::Query(query) => Some(query.selection_set),
+                    OperationDefinition::Mutation(mutation) => Some(&mutation.selection_set),
+                    OperationDefinition::Query(query) => Some(&query.selection_set),
                     OperationDefinition::SelectionSet(set) => Some(set),
                     _ => None,
                 };
                 // place all fragments in place of the fragment spread
                 if let Some(selection_set) = possible_selection_set {
-                    selection_set.items.into_iter().for_each(|selection| {
+                    selection_set.items.iter().for_each(|selection| {
                         if let Selection::Field(type_field) = selection {
-                            type_field.selection_set.items.into_iter().for_each(
-                                |fragment_selections| {
+                            type_field
+                                .selection_set
+                                .items
+                                .iter()
+                                .for_each(|fragment_selections| {
                                     if let Selection::Field(operation) = fragment_selections {
                                         operations.push((type_field.name, operation.name))
                                     } else if let Selection::FragmentSpread(fragment_spread) =
@@ -161,7 +168,7 @@ fn parse_graphql(s: &str) -> Vec<(&str, &str)> {
                                         if let Some(set) =
                                             fragments.get(&fragment_spread.fragment_name)
                                         {
-                                            set.items.iter().for_each(|operation_field| {
+                                            set.iter().for_each(|operation_field| {
                                                 if let Selection::Field(operation) = operation_field
                                                 {
                                                     operations
@@ -170,8 +177,7 @@ fn parse_graphql(s: &str) -> Vec<(&str, &str)> {
                                             });
                                         }
                                     }
-                                },
-                            );
+                                });
                         }
                     })
                 }
@@ -179,7 +185,7 @@ fn parse_graphql(s: &str) -> Vec<(&str, &str)> {
         })
     }
 
-    operations
+    operations.into_iter()
 }
 
 fn is_js_file<P: AsRef<Path>>(path: P) -> bool {
