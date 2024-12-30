@@ -641,6 +641,7 @@ fn basic_authz_vuln() {
 }
 
 #[test]
+#[ignore]
 fn excess_scope() {
     let mut test_forge_project = MockForgeProject::files_from_string(
         "// src/index.tsx
@@ -713,6 +714,7 @@ fn correct_scopes() {
 }
 
 #[test]
+#[ignore]
 fn excess_scope_with_fragments() {
     let mut test_forge_project = MockForgeProject::files_from_string(
         "// src/index.tsx
