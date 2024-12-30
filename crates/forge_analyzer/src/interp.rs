@@ -390,10 +390,14 @@ pub struct Interp<'cx, C: Runner<'cx>> {
     pub callstack_arguments: Vec<Vec<Value>>,
     pub value_manager: ValueManager,
     pub permissions: Vec<String>,
+    pub jira_service_management_permission_resolver: &'cx PermissionHashMap,
     pub jira_permission_resolver: &'cx PermissionHashMap,
     pub confluence_permission_resolver: &'cx PermissionHashMap,
+    pub jira_service_management_regex_map: &'cx HashMap<String, Regex>,
+    pub bitbucket_permission_resolver: &'cx PermissionHashMap,
     pub jira_regex_map: &'cx HashMap<String, Regex>,
     pub confluence_regex_map: &'cx HashMap<String, Regex>,
+    pub bitbucket_regex_map: &'cx HashMap<String, Regex>,
     _checker: PhantomData<C>,
 }
 
@@ -506,10 +510,14 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
         call_all: bool,
         call_uncalled: bool,
         permissions: Vec<String>,
+        jira_service_management_permission_resolver: &'cx PermissionHashMap,
+        jira_service_management_regex_map: &'cx HashMap<String, Regex>,
         jira_permission_resolver: &'cx PermissionHashMap,
         jira_regex_map: &'cx HashMap<String, Regex>,
         confluence_permission_resolver: &'cx PermissionHashMap,
         confluence_regex_map: &'cx HashMap<String, Regex>,
+        bitbucket_permission_resolver: &'cx PermissionHashMap,
+        bitbucket_regex_map: &'cx HashMap<String, Regex>,
     ) -> Self {
         let call_graph = CallGraph::new(env);
 
@@ -536,10 +544,14 @@ impl<'cx, C: Runner<'cx>> Interp<'cx, C> {
                 expecting_value: VecDeque::default(),
             },
             permissions,
+            jira_service_management_permission_resolver,
             jira_permission_resolver,
             confluence_permission_resolver,
+            jira_service_management_regex_map,
+            bitbucket_permission_resolver,
             jira_regex_map,
             confluence_regex_map,
+            bitbucket_regex_map,
             _checker: PhantomData,
             runner_visited: RefCell::new(FxHashSet::default()),
         }

@@ -1103,7 +1103,19 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                             first_arg_vec.iter().for_each(|first_arg| {
                                 let first_arg = first_arg.replace(&['\"'][..], "");
                                 second_arg_vec.iter().for_each(|second_arg| {
-                                    if intrinsic_func_type == IntrinsicName::RequestConfluence {
+                                    if intrinsic_func_type
+                                        == IntrinsicName::RequestJiraServiceManagement
+                                    {
+                                        let permissions = check_url_for_permissions(
+                                            interp.jira_service_management_permission_resolver,
+                                            interp.jira_service_management_regex_map,
+                                            translate_request_type(Some(second_arg)),
+                                            &first_arg,
+                                        );
+                                        permissions_within_call.extend_from_slice(&permissions)
+                                    } else if intrinsic_func_type
+                                        == IntrinsicName::RequestConfluence
+                                    {
                                         let permissions = check_url_for_permissions(
                                             interp.confluence_permission_resolver,
                                             interp.confluence_regex_map,
@@ -1119,13 +1131,32 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                             &first_arg,
                                         );
                                         permissions_within_call.extend_from_slice(&permissions)
+                                    } else if intrinsic_func_type == IntrinsicName::RequestBitbucket
+                                    {
+                                        let permissions = check_url_for_permissions(
+                                            interp.bitbucket_permission_resolver,
+                                            interp.bitbucket_regex_map,
+                                            translate_request_type(Some(second_arg)),
+                                            &first_arg,
+                                        );
+                                        permissions_within_call.extend_from_slice(&permissions)
                                     }
                                 })
                             })
                         } else {
                             first_arg_vec.iter().for_each(|first_arg| {
                                 let first_arg = first_arg.replace(&['\"'][..], "");
-                                if intrinsic_func_type == IntrinsicName::RequestConfluence {
+                                if intrinsic_func_type
+                                    == IntrinsicName::RequestJiraServiceManagement
+                                {
+                                    let permissions = check_url_for_permissions(
+                                        interp.jira_service_management_permission_resolver,
+                                        interp.jira_service_management_regex_map,
+                                        RequestType::Get,
+                                        &first_arg,
+                                    );
+                                    permissions_within_call.extend_from_slice(&permissions)
+                                } else if intrinsic_func_type == IntrinsicName::RequestConfluence {
                                     let permissions = check_url_for_permissions(
                                         interp.confluence_permission_resolver,
                                         interp.confluence_regex_map,
@@ -1141,6 +1172,14 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                                         &first_arg,
                                     );
                                     permissions_within_call.extend_from_slice(&permissions)
+                                } else if intrinsic_func_type == IntrinsicName::RequestBitbucket {
+                                    let permissions = check_url_for_permissions(
+                                        interp.bitbucket_permission_resolver,
+                                        interp.bitbucket_regex_map,
+                                        RequestType::Get,
+                                        &first_arg,
+                                    );
+                                    permissions_within_call.extend_from_slice(&permissions)
                                 }
                             })
                         }
@@ -1150,8 +1189,7 @@ impl<'cx> Dataflow<'cx> for PermissionDataflow {
                     .permissions
                     .retain(|permissions| !permissions_within_call.contains(permissions));
             }
-
-            // remvove all permissions that it finds
+            // remove all permissions that it finds
         }
         initial_state
     }

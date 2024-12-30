@@ -85,6 +85,13 @@ pub fn check_url_for_permissions(
     vec![]
 }
 
+pub fn get_permission_resolver_jira_service_management(
+) -> (PermissionHashMap, HashMap<String, Regex>) {
+    let jira_service_management_url =
+        "https://developer.atlassian.com/cloud/jira/service-desk/swagger.v3.json";
+    get_permission_resolver(jira_service_management_url)
+}
+
 pub fn get_permission_resolver_jira() -> (PermissionHashMap, HashMap<String, Regex>) {
     let jira_url = "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json";
     get_permission_resolver(jira_url)
@@ -93,6 +100,11 @@ pub fn get_permission_resolver_jira() -> (PermissionHashMap, HashMap<String, Reg
 pub fn get_permission_resolver_confluence() -> (PermissionHashMap, HashMap<String, Regex>) {
     let confluence_url = "https://developer.atlassian.com/cloud/confluence/swagger.v3.json";
     get_permission_resolver(confluence_url)
+}
+
+pub fn get_permission_resolver_bitbucket() -> (PermissionHashMap, HashMap<String, Regex>) {
+    let bitbucket_url = "https://api.bitbucket.org/swagger.json";
+    get_permission_resolver(bitbucket_url)
 }
 
 pub fn get_permission_resolver(url: &str) -> (PermissionHashMap, HashMap<String, Regex>) {
@@ -264,5 +276,90 @@ mod test {
         ];
 
         assert_eq!(result, expected_permission);
+    }
+
+    #[test]
+    fn test_get_organization() {
+        let (permission_map, regex_map) = get_permission_resolver_jira_service_management();
+        let url = "/rest/servicedeskapi/organization";
+        let request_type = RequestType::Get;
+        let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
+
+        println!("Permission Map: {:?}", permission_map);
+        println!("Regex Map: {:?}", regex_map);
+
+        assert!(!result.is_empty(), "Should have parsed permissions");
+        assert!(
+            result.contains(&String::from("manage:servicedesk-customer")),
+            "Should require manage:servicedesk-customer permission"
+        );
+    }
+
+    #[test]
+    fn test_resolving_default_reviewer_check_permissions() {
+        let (permission_map, regex_map) = get_permission_resolver_bitbucket();
+        let url = "/repositories/mockworkspace/mockreposlug/default-reviewers/jcg";
+        let request_type = RequestType::Get;
+        let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
+
+        assert!(
+            !result.is_empty(),
+            "Should have parsed permissions for checking default reviewers endpoint"
+        );
+        assert!(
+            result.contains(&String::from("read:pullrequest:bitbucket")),
+            "Should require read:pullrequest:bitbucket permission"
+        );
+    }
+
+    #[test]
+    fn test_resolving_default_reviewer_add_permissions() {
+        let (permission_map, regex_map) = get_permission_resolver_bitbucket();
+        let url = "/repositories/mockworkspace/mockreposlug/default-reviewers/jcg";
+        let request_type = RequestType::Put;
+        let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
+
+        assert!(
+            !result.is_empty(),
+            "Should have parsed permissions for adding default reviewers endpoint"
+        );
+        assert!(
+            result.contains(&String::from("admin:repository:bitbucket")),
+            "Should require admin:repository:bitbucket permission"
+        );
+    }
+
+    #[test]
+    fn test_resolving_repositories_workspace_permissions() {
+        let (permission_map, regex_map) = get_permission_resolver_bitbucket();
+        let url = "/repositories/asecurityteam";
+        let request_type = RequestType::Get;
+        let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
+
+        assert!(
+            !result.is_empty(),
+            "Should have parsed permissions for workspace repositories endpoint"
+        );
+        assert!(
+            result.contains(&String::from("read:repository:bitbucket")),
+            "Should require read:repository:bitbucket permission"
+        );
+    }
+
+    #[test]
+    fn test_resolving_branch_restriction_permissions() {
+        let (permission_map, regex_map) = get_permission_resolver_bitbucket();
+        let url = "/repositories/asecurityteam/mock/branch-restrictions";
+        let request_type = RequestType::Get;
+        let result = check_url_for_permissions(&permission_map, &regex_map, request_type, url);
+
+        assert!(
+            !result.is_empty(),
+            "Should have parsed permissions for branch restrictions endpoint"
+        );
+        assert!(
+            result.contains(&String::from("admin:repository:bitbucket")),
+            "Should require admin:repository:bitbucket permission"
+        );
     }
 }
